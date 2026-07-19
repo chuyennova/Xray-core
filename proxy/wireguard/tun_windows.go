@@ -240,21 +240,39 @@ func (t *kernelTun) DialContextTCPAddrPort(ctx context.Context, addr netip.AddrP
 	if !addr.IsValid() {
 		return nil, fmt.Errorf("invalid TCP destination")
 	}
-	if addr.Addr().Is4() {
+
+	// DNS resolution in Xray may represent an IPv4 destination as an
+	// IPv4-mapped IPv6 address (::ffff:a.b.c.d). Normalize it before
+	// choosing tcp4/tcp6, otherwise Winsock receives a mapped address on
+	// a tcp6 socket and returns WSAEADDRNOTAVAIL ("no suitable address found").
+	remoteIP := addr.Addr().Unmap()
+	remoteAddr := netip.AddrPortFrom(remoteIP, addr.Port())
+
+	if remoteIP.Is4() {
 		if t.tcp4 == nil {
 			return nil, fmt.Errorf("IPv4 is not configured on %q", t.name)
 		}
-		return t.tcp4.DialContext(ctx, "tcp4", addr.String())
+		return t.tcp4.DialContext(ctx, "tcp4", remoteAddr.String())
 	}
 	if t.tcp6 == nil {
 		return nil, fmt.Errorf("IPv6 is not configured on %q", t.name)
 	}
-	return t.tcp6.DialContext(ctx, "tcp6", addr.String())
+	return t.tcp6.DialContext(ctx, "tcp6", remoteAddr.String())
 }
 
 func (t *kernelTun) DialUDPAddrPort(laddr, raddr netip.AddrPort) (net.Conn, error) {
 	if !raddr.IsValid() {
 		return nil, fmt.Errorf("invalid UDP destination")
+	}
+
+	// Apply the same normalization for UDP. This keeps IPv4-mapped
+	// destinations on the udp4 path and also normalizes a mapped local
+	// address supplied by the caller.
+	remoteIP := raddr.Addr().Unmap()
+	raddr = netip.AddrPortFrom(remoteIP, raddr.Port())
+	if laddr.IsValid() {
+		localIP := laddr.Addr().Unmap()
+		laddr = netip.AddrPortFrom(localIP, laddr.Port())
 	}
 
 	var (
