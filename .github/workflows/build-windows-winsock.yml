@@ -1,0 +1,89 @@
+name: Build Xray Windows Winsock
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "windows-winsock-*"
+    paths:
+      - "proxy/wireguard/**"
+      - ".github/workflows/build-windows-winsock.yml"
+      - "go.mod"
+      - "go.sum"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-amd64:
+    runs-on: ubuntu-latest
+    env:
+      GOOS: windows
+      GOARCH: amd64
+      CGO_ENABLED: 0
+      WINTUN_VERSION: 0.14.1
+      WINTUN_SHA256: 07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify formatting
+        run: |
+          test -z "$(gofmt -l proxy/wireguard/tun_default.go proxy/wireguard/tun_windows.go)"
+
+      - name: Build Xray Windows amd64
+        run: |
+          mkdir -p build
+          COMMID=$(git describe --always --dirty)
+          go build \
+            -o build/xray.exe \
+            -trimpath \
+            -buildvcs=false \
+            -gcflags="all=-l=4" \
+            -ldflags="-X github.com/xtls/xray-core/core.build=${COMMID} -s -w -buildid=" \
+            -v ./main
+
+      - name: Download and verify Wintun
+        run: |
+          curl -fL --retry 5 --retry-delay 5 \
+            "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip" \
+            -o wintun.zip
+          echo "${WINTUN_SHA256}  wintun.zip" | sha256sum -c -
+          unzip -q wintun.zip -d wintun-package
+          cp wintun-package/wintun/bin/amd64/wintun.dll build/
+          cp wintun-package/wintun/LICENSE.txt build/LICENSE-Wintun.txt
+
+      - name: Copy documentation
+        run: |
+          cp LICENSE build/LICENSE-Xray.txt
+          cp README.md build/README.md
+
+      - name: Create build manifest
+        run: |
+          {
+            echo "base=Xray-core-v26.7.11"
+            echo "branch=${GITHUB_REF_NAME}"
+            echo "commit=${GITHUB_SHA}"
+            echo "target=windows/amd64"
+            echo "mode=wireguard-kernel-tun-winsock"
+          } > build/BUILD-INFO.txt
+          sha256sum build/xray.exe build/wintun.dll > build/SHA256SUMS.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Xray-windows-amd64-winsock-${{ github.sha }}
+          path: build/
+          if-no-files-found: error
+          retention-days: 30
