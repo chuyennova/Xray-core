@@ -197,14 +197,12 @@ func calculateWindowsInterfaceName(localAddresses []netip.Addr) string {
 }
 
 func newWindowsTCPDialer(network string, localAddr netip.Addr, ifIndex int) *net.Dialer {
-	// Bind the source address configured on this Wintun adapter and also pin
-	// the socket to the adapter index. The source bind is required for reliable
-	// IPv6 source selection on Windows (especially when the tunnel address is a
-	// ULA /128), while Addr.Unmap() in DialContextTCPAddrPort keeps mapped IPv4
-	// destinations on the tcp4 path.
-	d := &net.Dialer{
-		LocalAddr: &net.TCPAddr{IP: net.IP(localAddr.AsSlice())},
-	}
+	// Do not hard-bind LocalAddr here. On Windows, binding a /32 IPv4
+	// Wintun address before connect can make IPv4 route/source selection fail,
+	// while IPv6 still succeeds. IP_UNICAST_IF/IPV6_UNICAST_IF is sufficient
+	// to force Winsock onto the Wintun interface and lets Windows select the
+	// source address configured on that interface.
+	d := &net.Dialer{}
 	d.Control = windowsInterfaceControl(network, ifIndex)
 	return d
 }
@@ -299,10 +297,11 @@ func (t *kernelTun) DialUDPAddrPort(laddr, raddr netip.AddrPort) (net.Conn, erro
 		localPort = laddr.Port()
 	}
 
-	// Bind UDP to the actual tunnel source address. Binding to an unspecified
-	// address can make Windows select the physical interface/source for IPv6
-	// even when IPV6_UNICAST_IF is set.
-	bindAddress := net.JoinHostPort(localIP.String(), strconv.Itoa(int(localPort)))
+	bindIP := "0.0.0.0"
+	if localIP.Is6() {
+		bindIP = "::"
+	}
+	bindAddress := net.JoinHostPort(bindIP, strconv.Itoa(int(localPort)))
 	packetConn, err := lc.ListenPacket(context.Background(), network, bindAddress)
 	if err != nil {
 		return nil, err
